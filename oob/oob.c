@@ -107,6 +107,7 @@ static router *uv_router_arr[ARR_LENGTH];
 static int uv_router_cnt;
 
 static target *targetptr;
+static uv_victim *victimptr;
 
 static uv_vuln *uv_alloc_vuln(size_t size) {
 #ifdef HEAP_REAL
@@ -568,9 +569,12 @@ static int uv_init(void) {
   uv_cache2 = kmem_cache_create(ROUTER_CACHE, sizeof(router), 0, 0, NULL);
   uv_cache3 = kmem_cache_create(TARGET_CACHE, sizeof(target), 0, 0, NULL);
 #endif
-  targetptr = uv_alloc_target(sizeof(target));
-  memcpy(targetptr->buffer, "failed", sizeof("failed"));
-  printk(KERN_INFO "[UV] targetptr: 0x%lx\n", (unsigned long)targetptr);
+  // targetptr = uv_alloc_target(sizeof(target));
+  // memcpy(targetptr->buffer, "failed", sizeof("failed"));
+  // printk(KERN_INFO "[UV] targetptr: 0x%lx\n", (unsigned long)targetptr);
+  victimptr = uv_alloc_victim(sizeof(uv_victim));
+  memcpy(victimptr->buffer, "victim", sizeof("victim"));
+  printk(KERN_INFO "[UV] victimptr: 0x%lx\n", (unsigned long)victimptr);
   return 0;
 
 err_class_destroy:
