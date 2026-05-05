@@ -18,16 +18,15 @@
 #define IOCTL_MAGIC		'Y'
 #define IOCTL_ALLOC_VULOBJ		_IOWR(IOCTL_MAGIC, 0x01, int)
 #define IOCTL_FREE_VULOBJ		_IOW(IOCTL_MAGIC, 0x02, int)
-#define IOCTL_WRITE		        _IOW(IOCTL_MAGIC, 0x03, int)
-#define IOCTL_READ		        _IOR(IOCTL_MAGIC, 0x04, int)
-//#define IOCTL_SPRAY		        _IOWR(IOCTL_MAGIC, 0x05, int)
-#define IOCTL_EXECUTE	        _IOW(IOCTL_MAGIC, 0x06, int)
-#define IOCTL_ALLOC_VICTIM		_IOWR(IOCTL_MAGIC, 0x07, int)
-#define IOCTL_FREE_VICTIM		_IOW(IOCTL_MAGIC, 0x08, int)
-#define IOCTL_ALLOC_DUMMY 		_IOWR(IOCTL_MAGIC, 0x09, int)
-#define IOCTL_FREE_DUMMY 		_IOW(IOCTL_MAGIC, 0x0A, int)
-#define IOCTL_GET_ADDR			_IOWR(IOCTL_MAGIC, 0x0B, struct addr_arg)
-#define IOCTL_ALLOC_DEFRAG		_IOWR(IOCTL_MAGIC, 0x0C, int)
+#define IOCTL_WRITE_VULOBJ		_IOW(IOCTL_MAGIC, 0x03, int)
+#define IOCTL_READ_VICTIM		_IOR(IOCTL_MAGIC, 0x04, int)
+#define IOCTL_EXECUTE_VICTIM	_IOW(IOCTL_MAGIC, 0x05, int)
+#define IOCTL_ALLOC_VICTIM		_IOWR(IOCTL_MAGIC, 0x06, int)
+#define IOCTL_FREE_VICTIM		_IOW(IOCTL_MAGIC, 0x07, int)
+#define IOCTL_ALLOC_DUMMY 		_IOWR(IOCTL_MAGIC, 0x08, int)
+#define IOCTL_FREE_DUMMY 		_IOW(IOCTL_MAGIC, 0x09, int)
+#define IOCTL_GET_ADDR			_IOWR(IOCTL_MAGIC, 0x0A, struct addr_arg)
+#define IOCTL_ALLOC_DEFRAG		_IOWR(IOCTL_MAGIC, 0x0B, int)
 
 /* 对象类型定义，可自行修改 */
 #define OBJ_TYPE_VUL		0
@@ -205,7 +204,7 @@ static long uv_unlocked_ioctl(struct file *file, unsigned int cmd, unsigned long
 			uv_free_victim(uv_victim_arr[handler]);
 			break;
 		// 执行 victim 中的函数指针对应的函数
-        case IOCTL_EXECUTE:
+        case IOCTL_EXECUTE_VICTIM:
 			if (copy_from_user(&handler, (void __user *)arg, sizeof(int))) {
 				mutex_unlock(&uv_lock);
 				return -EFAULT;
@@ -249,7 +248,7 @@ static long uv_unlocked_ioctl(struct file *file, unsigned int cmd, unsigned long
 			}
 			break;
 		// 写 vulobj
-		case IOCTL_WRITE:
+		case IOCTL_WRITE_VULOBJ:
 			if (copy_from_user(&req, (void __user *)arg, sizeof(req))) {
 				mutex_unlock(&uv_lock);
 				return -EFAULT;
@@ -259,7 +258,7 @@ static long uv_unlocked_ioctl(struct file *file, unsigned int cmd, unsigned long
 			}
 			break;
 		// 读 victim
-        case IOCTL_READ:
+        case IOCTL_READ_VICTIM:
 			if (copy_from_user(&req, (void __user *)arg, sizeof(req))) {
 				mutex_unlock(&uv_lock);
 				return -EFAULT;

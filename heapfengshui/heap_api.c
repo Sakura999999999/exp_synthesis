@@ -10,15 +10,15 @@
 #define IOCTL_MAGIC             'Y'
 #define IOCTL_ALLOC_VULOBJ      _IOWR(IOCTL_MAGIC, 0x01, int)
 #define IOCTL_FREE_VULOBJ       _IOW(IOCTL_MAGIC, 0x02, int)
-#define IOCTL_WRITE             _IOW(IOCTL_MAGIC, 0x03, int)
-#define IOCTL_READ              _IOR(IOCTL_MAGIC, 0x04, int)
-#define IOCTL_EXECUTE           _IOW(IOCTL_MAGIC, 0x06, int)
-#define IOCTL_ALLOC_VICTIM      _IOWR(IOCTL_MAGIC, 0x07, int)
-#define IOCTL_FREE_VICTIM       _IOW(IOCTL_MAGIC, 0x08, int)
-#define IOCTL_ALLOC_DUMMY       _IOWR(IOCTL_MAGIC, 0x09, int)
-#define IOCTL_FREE_DUMMY        _IOW(IOCTL_MAGIC, 0x0A, int)
-#define IOCTL_GET_ADDR          _IOWR(IOCTL_MAGIC, 0x0B, struct addr_arg)
-#define IOCTL_ALLOC_DEFRAG      _IOWR(IOCTL_MAGIC, 0x0C, int)
+#define IOCTL_WRITE_VULOBJ      _IOW(IOCTL_MAGIC, 0x03, int)
+#define IOCTL_READ_VICTIM       _IOR(IOCTL_MAGIC, 0x04, int)
+#define IOCTL_EXECUTE_VICTIM    _IOW(IOCTL_MAGIC, 0x05, int)
+#define IOCTL_ALLOC_VICTIM      _IOWR(IOCTL_MAGIC, 0x06, int)
+#define IOCTL_FREE_VICTIM       _IOW(IOCTL_MAGIC, 0x07, int)
+#define IOCTL_ALLOC_DUMMY       _IOWR(IOCTL_MAGIC, 0x08, int)
+#define IOCTL_FREE_DUMMY        _IOW(IOCTL_MAGIC, 0x09, int)
+#define IOCTL_GET_ADDR          _IOWR(IOCTL_MAGIC, 0x0A, struct addr_arg)
+#define IOCTL_ALLOC_DEFRAG      _IOWR(IOCTL_MAGIC, 0x0B, int)
 
 struct request_arg {
     int handler;
@@ -173,8 +173,8 @@ int heap_write_vul(heap_ctx_t *ctx, int idx, int offset, char value) {
     req.offset = offset;
     req.value = value;
 
-    if (ioctl(ctx->fd, IOCTL_WRITE, &req) < 0) {
-        perror("[-] write ioctl failed");
+    if (ioctl(ctx->fd, IOCTL_WRITE_VULOBJ, &req) < 0) {
+        perror("[-] write vuln ioctl failed");
         return -1;
     }
 
@@ -196,8 +196,8 @@ int heap_execute_victim(heap_ctx_t *ctx, int idx) {
         return -1;
     }
 
-    if (ioctl(ctx->fd, IOCTL_EXECUTE, &handle) < 0) {
-        perror("[-] execute ioctl failed");
+    if (ioctl(ctx->fd, IOCTL_EXECUTE_VICTIM, &handle) < 0) {
+        perror("[-] execute victim ioctl failed");
         return -1;
     }
 
@@ -220,8 +220,8 @@ int display_victim(heap_ctx_t *ctx, int idx) {
         req.handler = idx;
         req.offset = i;
         req.value = 0;
-        if (ioctl(ctx->fd, IOCTL_READ, &req) < 0) {
-            perror("[-] read ioctl failed");
+        if (ioctl(ctx->fd, IOCTL_READ_VICTIM, &req) < 0) {
+            perror("[-] read victim ioctl failed");
             return -1;
         }
         buf[i] = (unsigned char)req.value;
