@@ -1,3 +1,4 @@
+#include <linux/build_bug.h>
 #include <linux/cdev.h>
 #include <linux/device.h>
 #include <linux/fs.h>
@@ -39,9 +40,18 @@
 #define IOCTL_FREE_ROUTER _IOW(IOCTL_MAGIC, 0x14, int)
 #define IOCTL_COPY_ROUTER _IOW(IOCTL_MAGIC, 0x15, int)
 #define IOCTL_SHOW_TARGET _IOR(IOCTL_MAGIC, 0x16, int)
+#define IOCTL_ALLOC_REFVICTIM _IOWR(IOCTL_MAGIC, 0x17, int)
+#define IOCTL_PUT_REFVICTIM _IOW(IOCTL_MAGIC, 0x18, int)
+#define IOCTL_WRITE_REFVICTIM _IOW(IOCTL_MAGIC, 0x19, int)
+#define IOCTL_READ_REFVICTIM _IOR(IOCTL_MAGIC, 0x1A, int)
+#define IOCTL_ALLOC_RECLAIM _IOWR(IOCTL_MAGIC, 0x1B, int)
+#define IOCTL_FREE_RECLAIM _IOW(IOCTL_MAGIC, 0x1C, int)
+#define IOCTL_WRITE_RECLAIM _IOW(IOCTL_MAGIC, 0x1D, int)
+#define IOCTL_READ_RECLAIM _IOR(IOCTL_MAGIC, 0x1E, int)
 
 #define ARR_LENGTH 512
 #define BUF_SIZE 512
+#define RECLAIM_MAGIC 0x55414652UL
 
 typedef struct {
   char buffer[BUF_SIZE + sizeof(void *)];
@@ -77,6 +87,17 @@ typedef struct {
   char buffer[32];
 } target;
 
+typedef struct {
+  int refcnt;
+  int id;
+  char data[BUF_SIZE];
+} uv_refvictim;
+
+typedef struct {
+  unsigned long magic;
+  char data[BUF_SIZE];
+} uv_reclaim;
+
 struct request_arg {
   int handler;
   int offset;
@@ -105,9 +126,24 @@ static bridge *uv_bridge_arr[ARR_LENGTH];
 static int uv_bridge_cnt;
 static router *uv_router_arr[ARR_LENGTH];
 static int uv_router_cnt;
+static uv_refvictim *uv_refvictim_arr[ARR_LENGTH];
+static int uv_refvictim_cnt;
+static bool uv_refvictim_freed[ARR_LENGTH];
+static uv_reclaim *uv_reclaim_arr[ARR_LENGTH];
+static int uv_reclaim_cnt;
 
 static target *targetptr;
 static uv_victim *victimptr;
+
+static bool uv_data_range_ok(int offset, int length) {
+  if (offset < 0 || length < 0)
+    return false;
+  if (offset > BUF_SIZE)
+    return false;
+  if (length > BUF_SIZE - offset)
+    return false;
+  return true;
+}
 
 static uv_vuln *uv_alloc_vuln(size_t size) {
 #ifdef HEAP_REAL
@@ -225,6 +261,40 @@ static void uv_free_target(target *obj) {
 #else
   if (obj)
     kmem_cache_free(uv_cache3, obj);
+#endif
+}
+
+static uv_refvictim *uv_alloc_refvictim(size_t size) {
+#ifdef HEAP_REAL
+  return kmalloc(size, GFP_KERNEL);
+#else
+  return kmem_cache_alloc(uv_cache1, GFP_KERNEL);
+#endif
+}
+
+static void uv_free_refvictim(uv_refvictim *obj) {
+#ifdef HEAP_REAL
+  kfree(obj);
+#else
+  if (obj)
+    kmem_cache_free(uv_cache1, obj);
+#endif
+}
+
+static uv_reclaim *uv_alloc_reclaim(size_t size) {
+#ifdef HEAP_REAL
+  return kmalloc(size, GFP_KERNEL);
+#else
+  return kmem_cache_alloc(uv_cache1, GFP_KERNEL);
+#endif
+}
+
+static void uv_free_reclaim(uv_reclaim *obj) {
+#ifdef HEAP_REAL
+  kfree(obj);
+#else
+  if (obj)
+    kmem_cache_free(uv_cache1, obj);
 #endif
 }
 
@@ -509,6 +579,179 @@ static long uv_unlocked_ioctl(struct file *file, unsigned int cmd,
   case IOCTL_SHOW_TARGET:
     printk(KERN_INFO "[UV] targetptr: %s\n", targetptr->buffer);
     break;
+  case IOCTL_ALLOC_REFVICTIM:
+    if (uv_refvictim_cnt >= ARR_LENGTH) {
+      mutex_unlock(&uv_lock);
+      return -ENOMEM;
+    }
+    handler = uv_refvictim_cnt;
+    uv_refvictim_arr[handler] = uv_alloc_refvictim(sizeof(uv_refvictim));
+    if (!uv_refvictim_arr[handler]) {
+      mutex_unlock(&uv_lock);
+      return -ENOMEM;
+    }
+    memset(uv_refvictim_arr[handler], 0, sizeof(uv_refvictim));
+    uv_refvictim_arr[handler]->refcnt = 2;
+    uv_refvictim_arr[handler]->id = handler;
+    memcpy(uv_refvictim_arr[handler]->data, "refvictim: alive",
+           sizeof("refvictim: alive"));
+    uv_refvictim_freed[handler] = false;
+    printk(KERN_INFO "[UV] refvictim[%d] @ %px\n", handler,
+           uv_refvictim_arr[handler]);
+    printk(KERN_INFO "[UV] refvictim[%d] refcnt @ %px data @ %px\n", handler,
+           &uv_refvictim_arr[handler]->refcnt,
+           uv_refvictim_arr[handler]->data);
+    if (copy_to_user((void __user *)arg, &handler, sizeof(int))) {
+      uv_free_refvictim(uv_refvictim_arr[handler]);
+      uv_refvictim_arr[handler] = NULL;
+      mutex_unlock(&uv_lock);
+      return -EFAULT;
+    }
+    uv_refvictim_cnt++;
+    break;
+  case IOCTL_PUT_REFVICTIM:
+    if (copy_from_user(&handler, (void __user *)arg, sizeof(int))) {
+      mutex_unlock(&uv_lock);
+      return -EFAULT;
+    }
+    if (handler >= 0 && handler < uv_refvictim_cnt &&
+        uv_refvictim_arr[handler] != NULL && !uv_refvictim_freed[handler]) {
+      uv_refvictim_arr[handler]->refcnt--;
+      printk(KERN_INFO "[UV] refvictim[%d] put, refcnt=%d\n", handler,
+             uv_refvictim_arr[handler]->refcnt);
+      if (uv_refvictim_arr[handler]->refcnt == 0) {
+        printk(KERN_INFO "[UV] refvictim[%d] freed, stale handler kept @ %px\n",
+               handler, uv_refvictim_arr[handler]);
+        uv_free_refvictim(uv_refvictim_arr[handler]);
+        uv_refvictim_freed[handler] = true;
+      }
+    }
+    break;
+  case IOCTL_WRITE_REFVICTIM:
+    if (copy_from_user(&req, (void __user *)arg, sizeof(req))) {
+      mutex_unlock(&uv_lock);
+      return -EFAULT;
+    }
+    if (!uv_data_range_ok(req.offset, req.length)) {
+      mutex_unlock(&uv_lock);
+      return -EINVAL;
+    }
+    if (req.handler >= 0 && req.handler < uv_refvictim_cnt &&
+        uv_refvictim_arr[req.handler] != NULL) {
+      if (copy_from_user(uv_refvictim_arr[req.handler]->data + req.offset,
+                         req.value, req.length)) {
+        mutex_unlock(&uv_lock);
+        return -EFAULT;
+      }
+      printk(KERN_INFO "[UV] refvictim[%d] write %d bytes at offset %d%s\n",
+             req.handler, req.length, req.offset,
+             uv_refvictim_freed[req.handler] ? " through stale handler" : "");
+    }
+    break;
+  case IOCTL_READ_REFVICTIM:
+    if (copy_from_user(&req, (void __user *)arg, sizeof(req))) {
+      mutex_unlock(&uv_lock);
+      return -EFAULT;
+    }
+    if (!uv_data_range_ok(req.offset, req.length)) {
+      mutex_unlock(&uv_lock);
+      return -EINVAL;
+    }
+    if (req.handler >= 0 && req.handler < uv_refvictim_cnt &&
+        uv_refvictim_arr[req.handler] != NULL) {
+      if (copy_to_user(req.value,
+                       uv_refvictim_arr[req.handler]->data + req.offset,
+                       req.length)) {
+        mutex_unlock(&uv_lock);
+        return -EFAULT;
+      }
+      if (copy_to_user((void __user *)arg, &req, sizeof(req))) {
+        mutex_unlock(&uv_lock);
+        return -EFAULT;
+      }
+      printk(KERN_INFO "[UV] refvictim[%d] read %d bytes at offset %d%s\n",
+             req.handler, req.length, req.offset,
+             uv_refvictim_freed[req.handler] ? " through stale handler" : "");
+    }
+    break;
+  case IOCTL_ALLOC_RECLAIM:
+    if (uv_reclaim_cnt >= ARR_LENGTH) {
+      mutex_unlock(&uv_lock);
+      return -ENOMEM;
+    }
+    handler = uv_reclaim_cnt;
+    uv_reclaim_arr[handler] = uv_alloc_reclaim(sizeof(uv_reclaim));
+    if (!uv_reclaim_arr[handler]) {
+      mutex_unlock(&uv_lock);
+      return -ENOMEM;
+    }
+    memset(uv_reclaim_arr[handler], 0, sizeof(uv_reclaim));
+    uv_reclaim_arr[handler]->magic = RECLAIM_MAGIC;
+    memcpy(uv_reclaim_arr[handler]->data, "reclaim: controlled object",
+           sizeof("reclaim: controlled object"));
+    printk(KERN_INFO "[UV] reclaim[%d] @ %px magic=0x%lx data @ %px\n",
+           handler, uv_reclaim_arr[handler], uv_reclaim_arr[handler]->magic,
+           uv_reclaim_arr[handler]->data);
+    if (copy_to_user((void __user *)arg, &handler, sizeof(int))) {
+      uv_free_reclaim(uv_reclaim_arr[handler]);
+      uv_reclaim_arr[handler] = NULL;
+      mutex_unlock(&uv_lock);
+      return -EFAULT;
+    }
+    uv_reclaim_cnt++;
+    break;
+  case IOCTL_FREE_RECLAIM:
+    if (copy_from_user(&handler, (void __user *)arg, sizeof(int))) {
+      mutex_unlock(&uv_lock);
+      return -EFAULT;
+    }
+    if (handler >= 0 && handler < uv_reclaim_cnt &&
+        uv_reclaim_arr[handler] != NULL) {
+      uv_free_reclaim(uv_reclaim_arr[handler]);
+      uv_reclaim_arr[handler] = NULL;
+    }
+    break;
+  case IOCTL_WRITE_RECLAIM:
+    if (copy_from_user(&req, (void __user *)arg, sizeof(req))) {
+      mutex_unlock(&uv_lock);
+      return -EFAULT;
+    }
+    if (!uv_data_range_ok(req.offset, req.length)) {
+      mutex_unlock(&uv_lock);
+      return -EINVAL;
+    }
+    if (req.handler >= 0 && req.handler < uv_reclaim_cnt &&
+        uv_reclaim_arr[req.handler] != NULL) {
+      if (copy_from_user(uv_reclaim_arr[req.handler]->data + req.offset,
+                         req.value, req.length)) {
+        mutex_unlock(&uv_lock);
+        return -EFAULT;
+      }
+    }
+    break;
+  case IOCTL_READ_RECLAIM:
+    if (copy_from_user(&req, (void __user *)arg, sizeof(req))) {
+      mutex_unlock(&uv_lock);
+      return -EFAULT;
+    }
+    if (!uv_data_range_ok(req.offset, req.length)) {
+      mutex_unlock(&uv_lock);
+      return -EINVAL;
+    }
+    if (req.handler >= 0 && req.handler < uv_reclaim_cnt &&
+        uv_reclaim_arr[req.handler] != NULL) {
+      if (copy_to_user(req.value,
+                       uv_reclaim_arr[req.handler]->data + req.offset,
+                       req.length)) {
+        mutex_unlock(&uv_lock);
+        return -EFAULT;
+      }
+      if (copy_to_user((void __user *)arg, &req, sizeof(req))) {
+        mutex_unlock(&uv_lock);
+        return -EFAULT;
+      }
+    }
+    break;
   }
 
   mutex_unlock(&uv_lock);
@@ -531,6 +774,9 @@ static char *uv_devnode(const struct device *dev, umode_t *mode) {
 
 static int uv_init(void) {
   int ret;
+
+  BUILD_BUG_ON(sizeof(uv_refvictim) != sizeof(uv_vuln));
+  BUILD_BUG_ON(sizeof(uv_reclaim) != sizeof(uv_vuln));
 
   printk("[UV] good func: 0x%lx\n", (unsigned long)good_function);
   printk("[UV] bad func: 0x%lx\n", (unsigned long)bad_function);
