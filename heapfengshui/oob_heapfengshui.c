@@ -14,41 +14,61 @@
 #define CLASS_NAME		"uv_vul_cls"
 #define VULOBJ_CACHE	"uv_" DEFECT_TYPE "_vulobj"
 
+/* ioctl 的一系列定义，可自行修改 */
 #define IOCTL_MAGIC		'Y'
 #define IOCTL_ALLOC_VULOBJ		_IOWR(IOCTL_MAGIC, 0x01, int)
 #define IOCTL_FREE_VULOBJ		_IOW(IOCTL_MAGIC, 0x02, int)
-#define IOCTL_WRITE		        _IOW(IOCTL_MAGIC, 0x03, int)
-#define IOCTL_READ		        _IOR(IOCTL_MAGIC, 0x04, int)
-//#define IOCTL_SPRAY		        _IOWR(IOCTL_MAGIC, 0x05, int)
-#define IOCTL_EXECUTE	        _IOW(IOCTL_MAGIC, 0x06, int)
-#define IOCTL_ALLOC_VICTIM		_IOWR(IOCTL_MAGIC, 0x07, int)
-#define IOCTL_FREE_VICTIM		_IOW(IOCTL_MAGIC, 0x08, int)
-#define IOCTL_ALLOC_DUMMY 		_IOWR(IOCTL_MAGIC, 0x09, int)
-#define IOCTL_FREE_DUMMY 		_IOW(IOCTL_MAGIC, 0x0A, int)
+#define IOCTL_WRITE_VULOBJ		_IOW(IOCTL_MAGIC, 0x03, int)
+#define IOCTL_READ_VICTIM		_IOR(IOCTL_MAGIC, 0x04, int)
+#define IOCTL_EXECUTE_VICTIM	_IOW(IOCTL_MAGIC, 0x05, int)
+#define IOCTL_ALLOC_VICTIM		_IOWR(IOCTL_MAGIC, 0x06, int)
+#define IOCTL_FREE_VICTIM		_IOW(IOCTL_MAGIC, 0x07, int)
+#define IOCTL_ALLOC_DUMMY 		_IOWR(IOCTL_MAGIC, 0x08, int)
+#define IOCTL_FREE_DUMMY 		_IOW(IOCTL_MAGIC, 0x09, int)
+#define IOCTL_GET_ADDR			_IOWR(IOCTL_MAGIC, 0x0A, struct addr_arg)
+#define IOCTL_ALLOC_DEFRAG		_IOWR(IOCTL_MAGIC, 0x0B, int)
 
-#define ARR_LENGTH 		512
-#define BUF_SIZE 		512
+/* 对象类型定义，可自行修改 */
+#define OBJ_TYPE_VUL		0
+#define OBJ_TYPE_VICTIM		1
+#define OBJ_TYPE_DUMMY		2
+#define OBJ_TYPE_DEFRAG		3
 
+#define DEFREG_MAX_SPRAY 	4096
 #define HEAP_REAL 1
-static struct kmem_cache *uv_vulobj_cache;
+#define ARR_LENGTH 		512 
 
+/* 漏洞对象大小，可自行修改 */
+#define BUF_SIZE 		512 
+
+/* vulobj, victim, dummy 可自行定义 */
 typedef struct {
 	char buffer[BUF_SIZE];
 } uv_vulobj;
 
 typedef struct {
 	void (*funptr)(void);
-    char buffer[BUF_SIZE - sizeof(void *)]; // set the size of victim_obj to 512
+    char buffer[BUF_SIZE / 2 - sizeof(void *)]; // size differs from vuln
 } uv_victim;
 
 typedef struct {
 	char buffer[BUF_SIZE];
 } uv_dummy;
 
+typedef struct {
+	char buffer[BUF_SIZE];
+} uv_defrag;
+
 struct request_arg {
 	int handler;
 	int offset;
 	char value;
+};
+
+struct addr_arg {
+	int type;
+	int handler;
+	unsigned long addr;
 };
 
 static dev_t uv_devno;
@@ -65,6 +85,9 @@ static int uv_victim_cnt;
 
 static uv_dummy *uv_dummy_arr[ARR_LENGTH];
 static int uv_dummy_cnt;
+
+static uv_defrag *uv_defrag_arr[DEFREG_MAX_SPRAY];
+static int uv_defrag_cnt;
 
 static uv_vulobj *uv_alloc_vulobj(size_t size) {
 	uv_vulobj *obj = kmalloc(size, GFP_KERNEL);
@@ -102,6 +125,10 @@ static void uv_free_dummy(uv_dummy *obj) {
 	kfree(obj);
 }
 
+static uv_defrag *uv_alloc_defrag(size_t size) {
+	return kmalloc(size, GFP_KERNEL);
+}
+
 static int uv_open(struct inode *inode, struct file *file) {
 	return 0;
 }
@@ -120,6 +147,8 @@ static void bad_function(void) {
 
 static long uv_unlocked_ioctl(struct file *file, unsigned int cmd, unsigned long arg) {
     struct request_arg req;
+	struct addr_arg areq;
+	void *obj;
 	int handler;
 
 	mutex_lock(&uv_lock);
@@ -162,18 +191,7 @@ static long uv_unlocked_ioctl(struct file *file, unsigned int cmd, unsigned long
 			}
 			uv_free_victim(uv_victim_arr[handler]);
 			break;
-        case IOCTL_WRITE:
-			if (copy_from_user(&req, (void __user *)arg, sizeof(req))) {
-				mutex_unlock(&uv_lock);
-				return -EFAULT;
-			}
-			if (req.handler >= 0 && req.handler < uv_vulobj_cnt && uv_vulobj_arr[req.handler] != NULL) {
-                uv_vulobj_arr[req.handler]->buffer[req.offset] = req.value;
-			}
-			break;
-        case IOCTL_READ:
-            break;
-        case IOCTL_EXECUTE:
+        case IOCTL_EXECUTE_VICTIM:
 			if (copy_from_user(&handler, (void __user *)arg, sizeof(int))) {
 				mutex_unlock(&uv_lock);
 				return -EFAULT;
@@ -201,6 +219,81 @@ static long uv_unlocked_ioctl(struct file *file, unsigned int cmd, unsigned long
 				return -EFAULT;
 			}
 			uv_free_dummy(uv_dummy_arr[handler]);
+			break;
+		// 去碎片化时分配 defrag 对象
+		case IOCTL_ALLOC_DEFRAG:
+			handler = uv_defrag_cnt;
+			if (copy_to_user((void __user *)arg, &handler, sizeof(int))) {
+				mutex_unlock(&uv_lock);
+				return -EFAULT;
+			}
+			uv_defrag_arr[uv_defrag_cnt] = uv_alloc_defrag(sizeof(uv_defrag));
+			if (uv_defrag_arr[uv_defrag_cnt]) {
+				uv_defrag_cnt++;
+			}
+			break;
+		case IOCTL_WRITE_VULOBJ:
+			if (copy_from_user(&req, (void __user *)arg, sizeof(req))) {
+				mutex_unlock(&uv_lock);
+				return -EFAULT;
+			}
+			if (req.handler >= 0 && req.handler < uv_vulobj_cnt && uv_vulobj_arr[req.handler] != NULL) {
+                uv_vulobj_arr[req.handler]->buffer[req.offset] = req.value;
+			}
+			break;
+        case IOCTL_READ_VICTIM:
+			if (copy_from_user(&req, (void __user *)arg, sizeof(req))) {
+				mutex_unlock(&uv_lock);
+				return -EFAULT;
+			}
+			if (req.handler >= 0 && req.handler < uv_victim_cnt && uv_victim_arr[req.handler] != NULL) {
+				if (req.offset >= 0 && req.offset < (int)sizeof(uv_victim)) {
+					req.value = ((char *)uv_victim_arr[req.handler])[req.offset];
+					if (copy_to_user((void __user *)arg, &req, sizeof(req))) {
+						mutex_unlock(&uv_lock);
+						return -EFAULT;
+					}
+				}
+			}
+            break;
+		// 获取某个 obj[idx] 的地址
+		case IOCTL_GET_ADDR:
+			if (copy_from_user(&areq, (void __user *)arg, sizeof(areq))) {
+				mutex_unlock(&uv_lock);
+				return -EFAULT;
+			}
+			obj = NULL;
+			// 根据 type 获取对应的 obj
+			switch (areq.type) {
+				case OBJ_TYPE_VUL:
+					if (areq.handler >= 0 && areq.handler < uv_vulobj_cnt)
+						obj = uv_vulobj_arr[areq.handler];
+					break;
+				case OBJ_TYPE_VICTIM:
+					if (areq.handler >= 0 && areq.handler < uv_victim_cnt)
+						obj = uv_victim_arr[areq.handler];
+					break;
+				case OBJ_TYPE_DUMMY:
+					if (areq.handler >= 0 && areq.handler < uv_dummy_cnt)
+						obj = uv_dummy_arr[areq.handler];
+					break;
+				case OBJ_TYPE_DEFRAG:
+					if (areq.handler >= 0 && areq.handler < uv_defrag_cnt)
+						obj = uv_defrag_arr[areq.handler];
+					break;
+				default:
+					mutex_unlock(&uv_lock);
+					return -EINVAL;
+			}
+			if (obj == NULL) {
+				mutex_unlock(&uv_lock);
+				return -EINVAL;
+			}
+			areq.addr = (unsigned long)obj;
+			if (copy_to_user((void __user *)arg, &areq, sizeof(areq))) {
+				mutex_unlock(&uv_lock);
+				return -EFAULT;
+			}
 			break;
 		 default:	
 			break;
